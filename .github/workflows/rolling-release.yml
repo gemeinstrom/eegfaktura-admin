@@ -1,22 +1,9 @@
-# Ziel: NEUE Workflow-Datei in eegfaktura/eegfaktura-admin (existiert dort
-# bisher nicht). Frontend-SPA, Caddy-served. Build-Flow:
-#   1. npm ci + npm run build -> erzeugt build/
-#   2. docker/build-push-action -> GHCR
-#      (keycloak-config.json ist als Caddy-Env-Template eingecheckt und wird
-#      via `ADD keycloak-config.json /srv` gebacken; Caddy rendert es zur
-#      Laufzeit aus KEYCLOAK_URL/_REALM/_CLIENT_ID — kein Runtime-Mount noetig)
-#
-# Image-Pfad: ghcr.io/eegfaktura/eeg-registration-frontend (Legacy-Name aus
-# der Makefile beibehalten, damit kein Image-Rename noetig ist).
-#
-# ⚠️ STUFE 1: KEIN repository_dispatch-Job. Erstmal nur sicherstellen, dass
-# der Source-Code auf einer CI-Maschine durchbaut. Wenn 1-2 push-builds gruen
-# sind und das Image im Cluster manuell getestet wurde, wird der
-# dispatch-deploy-Job in einer zweiten Iteration ergaenzt (Stufe 3).
-#
-# Vorbedingung Stufe 1: keine (GITHUB_TOKEN reicht aus, kein PLATFORM_DEPLOY_PAT).
-# Vorbedingung Stufe 3: `PLATFORM_DEPLOY_PAT`-Secret im Repo + dispatch-deploy
-# job in dieser Datei.
+# gemeinstrom-Fork-Variante des upstream rolling-release-Workflows.
+# Delta zum Upstream (eegfaktura/eegfaktura-admin):
+#   - Push nach ghcr.io/gemeinstrom/<repo-name> statt ghcr.io/vfeeg-development/eeg-registration-frontend
+#   - GITHUB_TOKEN statt VFEEG_DEV_PUSH_PAT (same-org push)
+#   - dispatch-deploy Jobs entfernt (kein Deploy-Dispatch in fremde Orgs)
+# Aufgesetzt 2026-10-04 (Fork-Neuanlage admin).
 
 name: Docker Image CI
 
@@ -36,10 +23,7 @@ on:
 
 env:
   REGISTRY: "ghcr.io"
-  # Development-Tier (ADR-0005): Push nach vfeeg-development. Legacy-Image-Name
-  # eeg-registration-frontend (aus der Makefile) bewusst beibehalten — NICHT
-  # ${{ github.repository }} (= eegfaktura/eegfaktura-admin).
-  IMAGE_NAME: "vfeeg-development/eeg-registration-frontend"
+  IMAGE_NAME: gemeinstrom/${{ github.event.repository.name }}
 
 jobs:
   build-and-push-image:
@@ -119,8 +103,8 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          # Cross-Org-Push nach vfeeg-development — GITHUB_TOKEN reicht nicht.
-          password: ${{ secrets.VFEEG_DEV_PUSH_PAT }}
+          # Same-Org push nach ghcr.io/gemeinstrom/* — GITHUB_TOKEN reicht.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build (PR) / Build and push (push)
         id: build
@@ -139,93 +123,3 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-
-  # Triggert das Platform-Repo, damit es den Cluster aktualisiert (Stufe 3).
-  # Laeuft nur bei push to default-branch (main/master), nicht bei PRs/Tags.
-  # Vorbedingung: PLATFORM_DEPLOY_PAT-Secret im Repo + Mapping
-  # `deploy-admin-frontend` in deploy-on-dispatch.yml (vorhanden) + Manifest
-  # k8s/33-admin-frontend.yaml zeigt auf vfeeg-development/...:latest (umgestellt).
-  dispatch-deploy:
-    needs: build-and-push-image
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger deploy in platform repo
-        env:
-          GH_TOKEN: ${{ secrets.PLATFORM_DEPLOY_PAT }}
-        run: |
-          PAYLOAD=$(cat <<EOF
-          {
-            "event_type": "deploy-admin-frontend",
-            "client_payload": {
-              "image_tag": "latest",
-              "source_sha": "${GITHUB_SHA}",
-              "source_repo": "${GITHUB_REPOSITORY}",
-              "source_ref": "${GITHUB_REF}"
-            }
-          }
-          EOF
-          )
-          echo "$PAYLOAD" | gh api repos/vfeeg-development/eegfaktura-platform/dispatches --input -
-          echo "Dispatched deploy-admin-frontend for sha=${GITHUB_SHA:0:8}"
-
-  # Preview-Deploy (ADR-0007): Push auf preview/** -> pinned Deploy des sha-Builds
-  # in die Dev-Zone, ohne main/Release anzufassen. Nur auf preview/**-Branches.
-  dispatch-preview-deploy:
-    needs: build-and-push-image
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/preview/')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger pinned preview deploy in platform repo
-        env:
-          GH_TOKEN: ${{ secrets.PLATFORM_DEPLOY_PAT }}
-        run: |
-          PAYLOAD=$(cat <<EOF
-          {
-            "event_type": "deploy-admin-frontend",
-            "client_payload": {
-              "mode": "pinned",
-              "image_tag": "sha-${GITHUB_SHA:0:7}",
-              "source_sha": "${GITHUB_SHA}",
-              "source_repo": "${GITHUB_REPOSITORY}",
-              "source_ref": "${GITHUB_REF}"
-            }
-          }
-          EOF
-          )
-          echo "$PAYLOAD" | gh api repos/vfeeg-development/eegfaktura-platform/dispatches --input -
-          echo "Dispatched pinned preview deploy-admin-frontend for sha-${GITHUB_SHA:0:7}"
-
-  # Feature-Env-Deploy (ADR-0008): Push auf env/<name> -> pinned Deploy des sha-Builds
-  # in den Namespace env-<name>. Die Env muss bereits provisioniert sein
-  # (overlays/env/<name> im platform-Repo); dieser Job deployt nur hinein.
-  dispatch-env-deploy:
-    needs: build-and-push-image
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/env/')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger pinned env deploy in platform repo
-        env:
-          GH_TOKEN: ${{ secrets.PLATFORM_DEPLOY_PAT }}
-        run: |
-          set -eu
-          ENV_NAME="${GITHUB_REF#refs/heads/env/}"
-          case "$ENV_NAME" in
-            *[!a-z0-9-]*|-*|*-|"") echo "Ungueltiger Env-Name aus '$GITHUB_REF' — erlaubt: a-z, 0-9, '-'" >&2; exit 1 ;;
-          esac
-          PAYLOAD=$(cat <<EOF
-          {
-            "event_type": "deploy-admin-frontend",
-            "client_payload": {
-              "mode": "pinned",
-              "env": "${ENV_NAME}",
-              "image_tag": "sha-${GITHUB_SHA:0:7}",
-              "source_sha": "${GITHUB_SHA}",
-              "source_repo": "${GITHUB_REPOSITORY}",
-              "source_ref": "${GITHUB_REF}"
-            }
-          }
-          EOF
-          )
-          echo "$PAYLOAD" | gh api repos/vfeeg-development/eegfaktura-platform/dispatches --input -
-          echo "Dispatched pinned env deploy-admin-frontend for sha-${GITHUB_SHA:0:7} -> env-${ENV_NAME}"
