@@ -2,7 +2,7 @@ import React, {FC, useEffect} from "react";
 import {Alert, Box, Button, IconButton, Step, StepLabel, Stepper, Typography} from "@mui/material";
 
 import {FormProvider, useForm} from "react-hook-form";
-import {AccountInfo, EegRegister} from "../../model/eeg.model";
+import {AccountInfo, AccountResult, EegRegister} from "../../model/eeg.model";
 import CommonEegPropertiesComponent from "../../components/registration/CommonEegProperties.component";
 import UserEegPropertiesComponent from "../../components/registration/UserEegProperties.component";
 import PontonPropertiesComponent from "../../components/registration/PontonProperties.component";
@@ -10,6 +10,38 @@ import {Api, APIError} from "../../services/eeg.service";
 import Snackbar, { SnackbarCloseReason } from '@mui/material/Snackbar';
 import {RegistrationContext} from "../../hooks/RegistrationContext";
 import {ArrowLeft, ArrowRight} from "@mui/icons-material";
+
+const STATUS_TEXT: Record<AccountResult["status"], string> = {
+  created: "angelegt",
+  linked: "bestehender Account, EEG ergänzt",
+  failed: "fehlgeschlagen",
+}
+
+// One line per login of the registration, e.g. „a@b.at: angelegt; c@d.at: fehlgeschlagen (E-Mail-Adresse ungültig)“.
+export const accountSummary = (results: AccountResult[]): string =>
+  results.length === 0 ? "" : "Logins: " + results
+    .map(a => `${a.email}: ${STATUS_TEXT[a.status] ?? a.status}${a.status === "failed" && a.message ? ` (${a.message})` : ""}`)
+    .join("; ")
+
+// selects that an Excel row can leave empty because its value cannot be registered (platform#229)
+const EXCEL_CHECKED = ["grid.area", "grid.allocation"] as const
+
+// the EEG exists, nothing was changed: the form stays for a correction (261015-ca1)
+const EegExists = 409
+
+export const registerErrorMessage = (e: APIError): {message: string, severity: "error" | "warning", sticky?: boolean} => {
+  switch (e.code) {
+    case EegExists:
+      return {message: e.message, severity: "error", sticky: true}
+    case 501:
+      return {message: e.message, severity: "error"}
+    case 502:
+    case 510:
+      return {message: e.message, severity: "warning"}
+    default:
+      return {message: "Error beim Anlegen des Mitglieds", severity: "error"}
+  }
+}
 
 const RegistrationPage: FC = () => {
 
@@ -35,65 +67,41 @@ const RegistrationPage: FC = () => {
       streetNumber: "",
       phone: "",
     },
+    accounts: [],
   }
-  const steps: { label: string, optional?: boolean }[] = [
-    {label: 'Allgemein'},
-    {label: 'Betreiber'},
-    // {label: 'Business'},
-    // {label: 'Contact'},
-    {label: 'Kommunikation'},
-  ];
+  const steps = ['Allgemein', 'Betreiber', 'Kommunikation'];
 
   // const {handleSubmit, control, watch, formState: {errors}, reset} = useForm<EegRegister>({defaultValues: newEeg})
   const formMethods = useForm<EegRegister>({defaultValues: newEeg, mode: "all"});
 
   const [open, setOpen] = React.useState(false);
   const [activeStep, setActiveStep] = React.useState(0);
-  const [message, setMessage] = React.useState<{message: string, severity: "success" | "error" | "warning" | "info" | undefined}>({message: "", severity: "success"});
-  const [skipped, setSkipped] = React.useState(new Set<number>());
-  const {reset, eeg, rcNumber, isExcelLoaded, excelFile, next, hasNext, prev, hasPrev, removeExcel} = React.useContext(RegistrationContext);
+  const [message, setMessage] = React.useState<{message: string, severity: "success" | "error" | "warning" | "info" | undefined, sticky?: boolean}>({message: "", severity: "success"});
+  const {reset, eeg, rcNumber, isExcelLoaded, excelFile, next, hasNext, prev, hasPrev} = React.useContext(RegistrationContext);
 
-  const isStepOptional = (index: number) => {
-    const step = steps[index]
-    return step.optional && step.optional;
-  };
-
-  const isStepSkipped = (step: number) => {
-    return skipped.has(step);
-  };
+  // counts the resets: the check below must run after the render that follows a reset, which registers the fields anew
+  const [resets, setResets] = React.useState(0);
 
   useEffect(() => {
     formMethods.reset(eeg);
-  }, [eeg])
+    setResets(n => n + 1)
+  }, [eeg, formMethods])
+
+  // an unknown type or a static/unknown allocation in the Excel row (platform#229): show the error of the select
+  // right away, not only on "Next"
+  useEffect(() => {
+    const invalid = EXCEL_CHECKED.filter(f => formMethods.getValues(f) === "")
+    if (activeStep === 0 && invalid.length > 0) {
+      formMethods.trigger(invalid)
+    }
+  }, [resets, activeStep, formMethods])
 
   const handleNext = () => {
-    let newSkipped = skipped;
-    if (isStepSkipped(activeStep)) {
-      newSkipped = new Set(newSkipped.values());
-      newSkipped.delete(activeStep);
-    }
-
     setActiveStep((prevActiveStep) => prevActiveStep + 1);
-    setSkipped(newSkipped);
   };
 
   const handleBack = () => {
     setActiveStep((prevActiveStep) => prevActiveStep - 1);
-  };
-
-  const handleSkip = () => {
-    if (!isStepOptional(activeStep)) {
-      // You probably want to guard against something like this,
-      // it should never occur unless someone's actively trying to break something.
-      throw new Error("You can't skip a step that isn't optional.");
-    }
-
-    setActiveStep((prevActiveStep) => prevActiveStep + 1);
-    setSkipped((prevSkipped) => {
-      const newSkipped = new Set(prevSkipped.values());
-      newSkipped.add(activeStep);
-      return newSkipped;
-    });
   };
 
   const handleReset = () => {
@@ -103,32 +111,35 @@ const RegistrationPage: FC = () => {
   };
 
   const onSubmit = (data: EegRegister) => {
-    try {
-      Api.eegService.registerEeg(trimEegRegisterData(data))
-        .then(r => {
-          setMessage({message: "Mitglied wurde angelegt!", severity: "success"})
-          setOpen(true)
-          handleReset()
-        })
-        .catch((e: APIError) => {
-          console.error("ERROR-Request: ", e, "Code: ", e.code)
-          switch (e.code) {
-            case 501:
-              setMessage({message: e.message, severity: "error"})
-              break;
-            case 502:
-            case 510:
-              setMessage({message: e.message, severity: "warning"})
-              break;
-            default:
-              setMessage({message: "Error beim Anlegen des Mitglieds", severity: "error"})
-          }
-          setOpen(true)
-          handleReset()
-        })
-    } catch (e) {
-      console.error("ERROR: ", e)
+    // the selects are checked only on the first step; another Excel row chosen on a later step can still lack a value.
+    // Not sent: admin-backend would reject it and the error path would move on to the next row (AD-CQ-2).
+    if (data.grid.area === "" || data.grid.allocation === "") {
+      setMessage({message: "Typ oder Verteilung der Gemeinschaft ungültig, bitte unter „Allgemein“ wählen.", severity: "error", sticky: true})
+      setOpen(true)
+      setActiveStep(0)
+      return
     }
+    // inside the chain, so that a failing trim ends in the .catch below
+    Promise.resolve().then(() => Api.eegService.registerEeg(trimEegRegisterData(data)))
+      .then(r => {
+        const results = r?.accounts ?? []
+        const failed = results.some(a => a.status === "failed")
+        setMessage({
+          message: ["EEG wurde angelegt.", accountSummary(results)].filter(Boolean).join(" "),
+          severity: failed ? "warning" : "success",
+          sticky: failed,
+        })
+        setOpen(true)
+        handleReset()
+      })
+      .catch((e: APIError) => {
+        console.error("ERROR-Request: ", e, "Code: ", e.code)
+        setMessage(registerErrorMessage(e))
+        setOpen(true)
+        if (e.code !== EegExists) {
+          handleReset()
+        }
+      })
   };
 
   const trimEegRegisterData = (data: EegRegister): EegRegister => {
@@ -152,6 +163,9 @@ const RegistrationPage: FC = () => {
     data.user.firstname = data.user.firstname.trim();
     data.user.lastname = data.user.lastname.trim();
     data.user.username = data.user.username.trim()
+    const accounts = (data.accounts ?? []).map(a => ({firstname: a.firstname.trim(), lastname: a.lastname.trim(), email: a.email.trim()}))
+    // empty: the backend sets up the login for the operator, as before
+    data.accounts = accounts.length > 0 ? accounts : undefined
 
     return data;
   }
@@ -162,10 +176,6 @@ const RegistrationPage: FC = () => {
         return <CommonEegPropertiesComponent/>
       case 1:
         return <UserEegPropertiesComponent />
-      // case 2:
-      //   return <BusinessEegPropertiesComponent control={formMethods.control}/>
-      // case 3:
-      //   return <AddressEegPropertiesComponent />
       case 2:
         return <PontonPropertiesComponent />
       default:
@@ -186,7 +196,8 @@ const RegistrationPage: FC = () => {
 
   return (
     <Box display="flex" flexDirection="column" height="100%" color={"primary.main"} bgcolor={"background.paper"} overflow={"auto"} padding={"24px"}>
-      <Snackbar autoHideDuration={10000} open={open} onClose={handleClose}>
+      {/* a failed login stays until it is closed */}
+      <Snackbar autoHideDuration={message.sticky ? null : 10000} open={open} onClose={handleClose}>
         <Alert
           onClose={handleClose}
           severity={message.severity}
@@ -199,25 +210,11 @@ const RegistrationPage: FC = () => {
       <FormProvider {...formMethods} >
         <div style={{flex: "1 1 auto"}}>
           <Stepper activeStep={activeStep}>
-            {steps.map((step: { label: string, optional?: boolean }, index) => {
-              const stepProps: { completed?: boolean } = {};
-              const labelProps: {
-                optional?: React.ReactNode;
-              } = {};
-              if (isStepOptional(index)) {
-                labelProps.optional = (
-                  <Typography variant="caption">Optional</Typography>
-                );
-              }
-              if (isStepSkipped(index)) {
-                stepProps.completed = false;
-              }
-              return (
-                <Step key={step.label} {...stepProps}>
-                  <StepLabel {...labelProps}>{step.label}</StepLabel>
-                </Step>
-              );
-            })}
+            {steps.map(label => (
+              <Step key={label}>
+                <StepLabel>{label}</StepLabel>
+              </Step>
+            ))}
           </Stepper>
           {/*{Object.values(formMethods.formState.errors).map((e, i) => (*/}
           {/*  <div>{e.message}</div>*/}
@@ -258,11 +255,6 @@ const RegistrationPage: FC = () => {
               </Box>
             )}
             <Box sx={{flex: '0 0 auto'}}>
-            {isStepOptional(activeStep) && (
-              <Button color="inherit" onClick={handleSkip} sx={{mr: 1}}>
-                Skip
-              </Button>
-            )}
             {(activeStep === steps.length - 1) ?
               (<Button variant="contained" onClick={formMethods.handleSubmit(onSubmit)}>
                 Finish

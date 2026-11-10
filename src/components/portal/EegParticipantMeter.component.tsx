@@ -1,13 +1,7 @@
-import {FC, ReactNode, useState} from "react";
-import {EegParticipant, Metering} from "../../model/eeg.model";
+import {FC} from "react";
+import {Metering} from "../../model/eeg.model";
 import {
   Box,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   FormControl, FormControlLabel,
   IconButton,
   Radio,
@@ -18,65 +12,13 @@ import { ModeEditRounded } from '@mui/icons-material';
 import {DataGrid, GridColDef, GridRenderCellParams, useGridApiRef} from "@mui/x-data-grid";
 import {DatePicker} from "@mui/x-date-pickers";
 import moment from 'moment'
-import {Controller, FormState, useForm} from "react-hook-form";
+import {Controller, useForm} from "react-hook-form";
 import {Api} from "../../services/eeg.service";
 import {AdminUpdateData} from "../../model/admin.model";
-import {UseFormReset} from "react-hook-form/dist/types/form";
 import {CellEditDialog, editDialog} from "./CellEdit.dialog";
 import {GridRowModel} from "@mui/x-data-grid/models/gridRows";
 import {useParticipantContext} from "./context/participant.context";
-import {DateCellEditor} from "./editor/DateCell.editor";
-
-const CellEditInputDialog:FC<{open: boolean, handleClose: () => void, handleSubmit: () => void, formState: FormState<Metering>, children: ReactNode}> = ({open, handleClose,handleSubmit, formState, children}) => <Dialog
-  open={open}
-  onClose={handleClose}
->
-  <form onSubmit={(event) => {
-    event.preventDefault();
-    event.persist();
-    handleSubmit();
-  }}
-  >
-  <DialogTitle>Subscribe</DialogTitle>
-  <DialogContent>
-    <DialogContentText>
-      Update
-    </DialogContentText>
-    {children}
-  </DialogContent>
-  <DialogActions>
-    <Button onClick={handleClose}>Cancel</Button>
-    <Button type="submit" disabled={!(formState.isValid && formState.isDirty)}>Subscribe</Button>
-  </DialogActions>
-  </form>
-</Dialog>
-
-const CellEditInputElement:FC<{params: GridRenderCellParams<any, string>, onUpdate: () => void, reset: UseFormReset<Metering>, formState: FormState<Metering>, children: ReactNode}> = ({params, onUpdate, reset, formState, children}) => {
-
-  const [openDialog, setOpenDialog] = useState(false);
-
-  const handleSubmit = () => {
-    setOpenDialog(false);
-    onUpdate();
-  }
-
-  const onClose = () => {
-    setOpenDialog(false)
-    reset()
-  }
-
-  return (
-    <>
-      <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
-        <div style={{ width: "100%"}}>{params.value}</div>
-        <IconButton color="primary" sx={{ fontSize: "6px" }} aria-label="directions" onClick={() => setOpenDialog(true)}>
-          <ModeEditRounded sx={{fontSize: "18px"}}/>
-        </IconButton>
-      </Box>
-      <CellEditInputDialog open={openDialog} handleClose={onClose} handleSubmit={handleSubmit} formState={formState}>{children}</CellEditInputDialog>
-    </>
-  );
-}
+import {DateCellEditor, dayToEpochMs, rejectInvalidDate} from "./editor/DateCell.editor";
 
 const CellEditInputElement1:FC<{params: GridRenderCellParams<Metering, string>, onStartEdit: (row: GridRowModel<Metering>) => void}> = ({params, onStartEdit}) => {
   return (
@@ -93,10 +35,6 @@ const CellEditInputElement1:FC<{params: GridRenderCellParams<Metering, string>, 
 
 const ProcessStateEditor: FC<{params: GridRenderCellParams<Metering, string>, updateMeter: (meter: Metering) => void}> = ({params, updateMeter}) => {
 
-  // const [value, setValue] = useState(params.value);
-  // const [activeDate, setActiveDate] = useState(params.row.activeSince)
-  // const [inactiveDate, setInactiveDate] = useState(params.row.inactiveSince)
-
   const onUpdate = (meter: Metering) => {
 
     let processData = {
@@ -106,21 +44,20 @@ const ProcessStateEditor: FC<{params: GridRenderCellParams<Metering, string>, up
       value: {processState: meter.processState}} as AdminUpdateData;
 
     if (meter.processState === 'ACTIVE') {
-      processData.value["activeSince"] = (moment(meter.activeSince).unix()*1000).toString()
+      processData.value["activeSince"] = dayToEpochMs(meter.activeSince)
     }
 
     if (meter.processState === 'INACTIVE') {
-      processData.value["inactiveSince"] = (moment(meter.inactiveSince).unix()*1000).toString()
+      processData.value["inactiveSince"] = dayToEpochMs(meter.inactiveSince)
     }
 
-    Api.portalService.changeProcessState("PROCESSSTATUS", processData)
+    // returned so the dialog waits for it; a failure keeps the entered value and shows the error there
+    return Api.portalService.changeProcessState("PROCESSSTATUS", processData)
       .then(row => {
         updateMeter(row)
-      })
-      .catch(e => reset());
-    // params.api.getSelectedRows().set(params.row.meteringPoint, params.row);
+      });
   }
-  const { handleSubmit, control, reset } = useForm<Metering>({
+  const { handleSubmit, control } = useForm<Metering>({
     defaultValues: {
       ...params.row
     },
@@ -150,7 +87,7 @@ const ProcessStateEditor: FC<{params: GridRenderCellParams<Metering, string>, up
                 label="Active seit ..."
                 format="DD.MM.YYYY"
                 value={field.value ? moment(field.value) : null}
-                onChange={(newValue) => { if (newValue) field.onChange(newValue.toDate()) }}
+                onChange={(newValue) => field.onChange((newValue?.isValid() ? newValue.toDate() : null) as unknown as Date)}
                 slotProps={{textField: {id: "date", size: "small", required: true, sx: {width: 220}}}}
                 />)}
             />}
@@ -163,7 +100,7 @@ const ProcessStateEditor: FC<{params: GridRenderCellParams<Metering, string>, up
                   label="Inactive seit ..."
                   format="DD.MM.YYYY"
                   value={field.value ? moment(field.value) : null}
-                  onChange={(newValue) => { if (newValue) field.onChange(newValue.toDate()) }}
+                  onChange={(newValue) => field.onChange((newValue?.isValid() ? newValue.toDate() : null) as unknown as Date)}
                   slotProps={{textField: {id: "date", size: "small", required: true, sx: {width: 220}}}}
                 />)}
             />}
@@ -173,26 +110,19 @@ const ProcessStateEditor: FC<{params: GridRenderCellParams<Metering, string>, up
           </RadioGroup>)} />
 
         </FormControl>
-      </div>, "Update Prozess Status", handleSubmit(onUpdate))
+      </div>, "Update Prozess Status", handleSubmit(onUpdate, rejectInvalidDate))
     }} />
   )
 }
 
 const EegParticipantMeterComponent: FC = () => {
 
-  // const [meters, setMeters] = useState<Metering[]>()
   const apiRef = useGridApiRef()
 
   const {selectedMeters, updateMeter, selectedParticipant} = useParticipantContext()
 
-  // useEffect(() => {
-  //   participant && setMeters(participant.meters)
-  // }, [participant]);
-
   const onUpdateMeter = (meter: Metering) => {
-    // setMeters(meters?.map(x => x.meteringPoint === meter.meteringPoint ? meter : x))
     updateMeter(meter)
-    // apiRef.current?.updateRows([{id: meter.meteringPoint, processState: meter.processState}])
   }
 
   const columns: GridColDef<Metering>[] = [

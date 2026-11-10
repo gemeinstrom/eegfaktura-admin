@@ -1,12 +1,10 @@
-import HomePage from "../pages/home/HomePage";
 import {RouteType} from "./config";
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import RegistrationPage from "../pages/registration/Registration.page";
 import RegistrationPontonPage from "../pages/registration/RegistrationPonton.page";
+import RegistrationAccountsPage from "../pages/registration/RegistrationAccounts.page";
 import RegistrationPageLayout from "../pages/registration/RegistrationPageLayout";
 import {DeleteForeverTwoTone, EditNoteTwoTone, ManageAccountsTwoTone} from "@mui/icons-material";
 import PortalPageLayout from "../pages/portal/PortalPageLayout";
-import PortalOverview from "../pages/portal/PortalOverview";
 import RawDataDeletePage from "../pages/ops/RawDataDeletePage";
 
 const appRoutes: RouteType[] = [
@@ -35,6 +33,14 @@ const appRoutes: RouteType[] = [
           displayText: "Ponton Registration",
         }
       },
+      {
+        path: "/registration/accounts",
+        element: <RegistrationAccountsPage />,
+        state: "registration.accounts",
+        sidebarProps: {
+          displayText: "EEG Accounts",
+        }
+      },
     ]
   },
   {
@@ -55,25 +61,6 @@ const appRoutes: RouteType[] = [
       icon: <DeleteForeverTwoTone/>
     },
   }
-  //   child: [
-  //     {
-  //       path: "/portal/manager-overview",
-  //       element: <PortalOverview />,
-  //       state: "manager.overview",
-  //       sidebarProps: {
-  //         displayText: "EEG Mitglieder",
-  //       },
-  //     },
-  //     {
-  //       path: "/portal/manager-billing",
-  //       element: <RegistrationPontonPage />,
-  //       state: "manager.billing",
-  //       sidebarProps: {
-  //         displayText: "EEG Rechungen",
-  //       }
-  //     },
-  //   ]
-  // }
 ];
 
 export default appRoutes;

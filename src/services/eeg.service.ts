@@ -1,8 +1,19 @@
-import {EegMember, EegParticipant, EegRegister, EegUsers, GridOperator, PontonRegister} from "../model/eeg.model";
+import {
+  AccountResult,
+  AccountUser,
+  AccountView,
+  EegMember,
+  EegParticipant,
+  EegRegister,
+  EegRegistered,
+  GridOperator,
+  PontonRegister,
+  PontonRegisterResponse
+} from "../model/eeg.model";
 import {AuthService} from "./auth.service";
 import {PortalService} from "./portal.service";
 
-const ADMIN_API_SERVER = process.env.REACT_APP_ADMIN_SERVER_URL;
+const ADMIN_API_SERVER = import.meta.env.REACT_APP_ADMIN_SERVER_URL;
 
 export class APIError extends Error {
   status: number;
@@ -30,15 +41,6 @@ export class EegService {
   public constructor(private authService: AuthService) {
   }
 
-
-  // private getUser() {
-  //   const oidcStorage = sessionStorage.getItem(`oidc.user:https://login.ourproject.at/auth/realms/VFEEG/:at.ourproject.vfeeg.admin`)
-  //   if (!oidcStorage) {
-  //     return null;
-  //   }
-  //
-  //   return User.fromStorageString(oidcStorage);
-  // }
 
   private async getUser() {
     return this.authService.getToken()
@@ -79,7 +81,7 @@ export class EegService {
     return response;
   }
 
-  async registerEeg(eeg: EegRegister): Promise<EegRegister> {
+  async registerEeg(eeg: EegRegister): Promise<EegRegistered> {
     const token = await this.getUser()
     return await fetch(`${ADMIN_API_SERVER}/eeg/register`, {
       method: 'POST',
@@ -96,7 +98,31 @@ export class EegService {
     });
   }
 
-  async registerPonton(ponton: PontonRegister): Promise<EegRegister> {
+  async getAccounts(tenant: string): Promise<AccountView[]> {
+    return await fetch(`${ADMIN_API_SERVER}/eeg/accounts?tenant=${encodeURIComponent(tenant)}`, {
+      method: 'GET',
+      headers: await this.withSecureHeaders({}),
+    }).then(this.handleErrors).then(res => res.json());
+  }
+
+  // The admin-backend answers with the result also for 400/500: it says why the account was not set up.
+  async addAccount(tenant: string, user: AccountUser): Promise<AccountResult> {
+    const res = await fetch(`${ADMIN_API_SERVER}/eeg/account?tenant=${encodeURIComponent(tenant)}`, {
+      method: 'POST',
+      headers: await this.withSecureHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify(user),
+    })
+    const fallback: AccountResult = {email: user.email, status: "failed", message: res.statusText || `HTTP ${res.status}`}
+    try {
+      const body = await res.json()
+      // e.g. 403 {"error": …}: no result, so it failed
+      return body && typeof body.status === "string" ? body as AccountResult : fallback
+    } catch (e) {
+      return fallback
+    }
+  }
+
+  async registerPonton(ponton: PontonRegister): Promise<PontonRegisterResponse | undefined> {
     return await fetch(`${ADMIN_API_SERVER}/eeg/ponton`, {
       method: 'POST',
       headers: await this.withSecureHeaders({
@@ -105,27 +131,21 @@ export class EegService {
       body: JSON.stringify(ponton)
     }).then(this.handleErrors).then(async res => {
       if (res.status === 200) {
-        const data = await res.json();
+        let data: PontonRegisterResponse;
+        try {
+          data = await res.json();
+        } catch (e) {
+          throw new APIError(res.status, 500, "Ponton-Registrierung: ungültige Antwort vom Server");
+        }
+        // admin-backend answers HTTP 200 and reports the outcome as status/message in the body
+        if (typeof data?.status === "number" && (data.status < 200 || data.status > 299)) {
+          throw new APIError(res.status, data.status,
+            `${data.message || "Ponton-Registrierung fehlgeschlagen"} (Registrierung bei Ponton evtl. bereits erfolgt; ein erneuter Versuch kann "bereits registriert" melden.)`);
+        }
         return data;
       }
     });
   }
-  async getEegUser(tenant: string): Promise<EegUsers[]> {
-    const token = await this.getUser()
-    // const token = "1234"
-    return await fetch(`${ADMIN_API_SERVER}/eeg/users`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      },
-    }).then(this.handleErrors).then(async res => {
-      if (res.status === 200) {
-        const data = await res.json();
-        return data.users;
-      }
-    });
-  }
-
   async getEeg(): Promise<EegMember[]> {
     const token = await this.getUser()
     // const token = "1234"
@@ -173,12 +193,3 @@ export class EegService {
     });
   }
 }
-// export const eegService = new EegService(authService);
-//
-// export const useToken = () => {
-//   const auth = useAuth()
-//
-//   const token = auth.user?.access_token
-//
-//   return token
-// }

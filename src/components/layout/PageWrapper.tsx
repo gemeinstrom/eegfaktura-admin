@@ -1,19 +1,6 @@
 import React, {ReactNode, useEffect} from "react";
 import { useDispatch } from "react-redux";
 import { setAppState } from "../../redux/features/appStateSlice";
-import {useAuth} from "react-oidc-context";
-
-// const ProtectedRoute:FC<PropsWithChildren> = ({children}) => {
-//   const auth = useAuth()
-//   if (!auth.isAuthenticated || (auth.user ? auth.user.expires_in ? auth.user.expires_in < 10 : true : true)) {
-//     auth.signinSilent()
-//     return <></>;
-//   }
-//
-//   console.log("AuthState: ", auth)
-//
-//   return (<>{children}</>)
-// };
 
 type Props = {
   state?: string,
@@ -21,7 +8,6 @@ type Props = {
 };
 
 const PageWrapper = (props: Props) => {
-  const auth = useAuth()
   const dispatch = useDispatch();
 
   useEffect(() => {
@@ -29,11 +15,6 @@ const PageWrapper = (props: Props) => {
       dispatch(setAppState(props.state));
     }
   }, [dispatch, props]);
-
-  // if (!auth.isAuthenticated || (auth.user ? auth.user.expires_in ? auth.user.expires_in < 10 : true : true)) {
-  //   auth.signinSilent()
-  //   return <></>;
-  // }
 
   return (
     <>{props.children}</>

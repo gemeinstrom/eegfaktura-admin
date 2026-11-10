@@ -1,7 +1,8 @@
 import React, {createContext, FC, ReactNode, useState} from "react";
-import {AccountInfo, EegRegister} from "../model/eeg.model";
+import {AccountInfo, AccountUser, EegRegister} from "../model/eeg.model";
 import {useSelector} from "react-redux";
 import {selectGridOperators} from "../redux/features/eegStateSlice";
+import {areaFromText} from "../model/area";
 
 const fieldTransformer = {
   "street": "Straße",
@@ -47,6 +48,46 @@ const initialEeg: EegRegister = {
     streetNumber: "",
     phone: "",
   },
+  accounts: [],
+}
+
+// Excel's notation for text in a CSV, ="0664123": read as written (raw), so unwrapped here
+const unwrapExcelText = (s: string) => {
+  const wrapped = /^="([\s\S]*)"$/.exec(s)
+  return wrapped ? wrapped[1].replace(/""/g, '"').trim() : s
+}
+
+// Column headers vary between list versions ("E-Mail" / "EMail", line breaks LF / CRLF): compare without
+// case, white space and hyphens
+const normalizeHeader = (h: string) => unwrapExcelText(h.trim()).toLowerCase().replace(/[\s-]/g, "")
+export const cell = (row: Record<string, any>, header: string) => {
+  const key = Object.keys(row).find(k => normalizeHeader(k) === normalizeHeader(header))
+  return key === undefined ? undefined : row[key]
+}
+const text = (v: any) => {
+  if (v === undefined || v === null) return ""
+  return unwrapExcelText(String(v).replace(/\r\n?/g, "\n").trim())
+}
+
+const accountFrom = (row: Record<string, any>, prefix: string): AccountUser => ({
+  firstname: text(cell(row, `${prefix}\nVorname`)),
+  lastname: text(cell(row, `${prefix}\nNachname`)),
+  email: text(cell(row, `${prefix}\nE-Mail`)),
+})
+
+// Logins from the member list (platform#166): the main account, or the contact if it is empty, and the further
+// accounts 1–3 that have an e-mail. All get the same rights. A list without any account: none, the contact gets
+// the login as before (with the username computed here).
+export const excelAccounts = (row: Record<string, any>): AccountUser[] => {
+  const main = accountFrom(row, "Hauptaccount")
+  const contact: AccountUser = {
+    firstname: text(cell(row, fieldTransformer.firstname)),
+    lastname: text(cell(row, fieldTransformer.lastname)),
+    email: text(cell(row, fieldTransformer.email)),
+  }
+  const further = [1, 2, 3].map(i => accountFrom(row, `Nebenaccount ${i}`)).filter(a => a.email)
+  if (!main.email && further.length === 0) return []
+  return [main.email ? main : contact, ...further].filter(a => a.email)
 }
 
 const calculateUsername = (firstname: string, lastname: string) => (lastname.slice(0,6)+firstname.slice(0,3)).toLowerCase()
@@ -61,18 +102,15 @@ const normalizeSettlement = (s: string): 'MONTHLY' | "ANNUAL" | "BIANNUAL" | "QU
   return "MONTHLY"
 }
 
-const normalizeAllocation = (s: string): "DYNAMIC" | "STATIC" => {
-  switch (s.toLowerCase()) {
-    case 'dynamisch': return "DYNAMIC"
-    case 'statisch': return "STATIC"
-  }
-  return "DYNAMIC"
-}
+// new communities only with dynamic allocation (platform#229, E6): an empty cell, "dynamisch", "dynamic" (any case)
+// give DYNAMIC; "statisch" or anything else gives "", which the form reports as an error of the row
+export const normalizeAllocation = (s?: string): EegRegister["grid"]["allocation"] =>
+  ["", "dynamisch", "dynamic"].includes((s ?? "").trim().toLowerCase()) ? "DYNAMIC" : ""
 
-const normalizeArea = (s?: string): "LOCAL" | "REGIONAL" | "GEA" | "BEG" => {
-  const res = String(s ?? 'LOCAL').toUpperCase()
-  return (["LOCAL", "REGIONAL", "GEA", "BEG"].includes(res) ? res : 'LOCAL') as "LOCAL" | "REGIONAL" | "GEA" | "BEG"
-}
+// keys and short forms ("EEG lokal"), any case; an empty cell stays LOCAL; an unknown type gives "", which the form
+// reports as an error of the row (platform#229)
+export const normalizeArea = (s?: string): EegRegister["grid"]["area"] =>
+  !s?.trim() ? 'LOCAL' : areaFromText(s) ?? ''
 
 interface RegistrationState {
   eeg: EegRegister;
@@ -122,6 +160,10 @@ const RegistrationProvider: FC<{children: ReactNode}> = ({children}) => {
   }
 
   const onLoad = (fileName: string, data: Record<string, any>[]) => {
+    if (data.length < 3) {
+      alert("No EEG found: the list needs a header, two further rows and then one row per EEG.")
+      return
+    }
     setExcelFile(fileName)
     setExcelData(data)
     setExcelIndex(2)
@@ -131,30 +173,30 @@ const RegistrationProvider: FC<{children: ReactNode}> = ({children}) => {
 
   const onLoad_setEegData = (data: Record<string, any>) => {
     const formValues: EegRegister = {
-      tenant: data[fieldTransformer.tenant],
-      rcNumber: data[fieldTransformer.tenant],
-      communityId: data[fieldTransformer.community_id],
+      tenant: text(cell(data, fieldTransformer.tenant)),
+      rcNumber: text(cell(data, fieldTransformer.tenant)),
+      communityId: text(cell(data, fieldTransformer.community_id)),
       online: false,
-      name: data[fieldTransformer.name],
-      settlement: data[fieldTransformer.settlementInterval],
-      description: data[fieldTransformer.name],
+      name: text(cell(data, fieldTransformer.name)),
+      settlement: text(cell(data, fieldTransformer.settlementInterval)),
+      description: text(cell(data, fieldTransformer.name)),
       user: {
-        firstname: data[fieldTransformer.firstname],
-        lastname: data[fieldTransformer.lastname],
-        email: data[fieldTransformer.email],
-        username: calculateUsername(data[fieldTransformer.firstname], data[fieldTransformer.lastname]),
+        firstname: text(cell(data, fieldTransformer.firstname)),
+        lastname: text(cell(data, fieldTransformer.lastname)),
+        email: text(cell(data, fieldTransformer.email)),
+        username: calculateUsername(text(cell(data, fieldTransformer.firstname)), text(cell(data, fieldTransformer.lastname))),
         password: "",
         confirmPassword: ""
       },
       businessInfo: {
         legal: "verein",
-        settlementInterval: normalizeSettlement(data[fieldTransformer.settlementInterval])
+        settlementInterval: normalizeSettlement(text(cell(data, fieldTransformer.settlementInterval)))
       },
       grid: {
-        id: data[fieldTransformer.operator_id],
-        name: getGridOperatorName(data[fieldTransformer.operator_id]),
-        area: normalizeArea(data[fieldTransformer.area]),
-        allocation: normalizeAllocation(data[fieldTransformer.allocation])
+        id: text(cell(data, fieldTransformer.operator_id)),
+        name: getGridOperatorName(text(cell(data, fieldTransformer.operator_id))),
+        area: normalizeArea(text(cell(data, fieldTransformer.area))),
+        allocation: normalizeAllocation(text(cell(data, fieldTransformer.allocation)))
       },
       pontonInfo: {
         host: "",
@@ -165,14 +207,15 @@ const RegistrationProvider: FC<{children: ReactNode}> = ({children}) => {
         domain: "edanet.at",
         pontonCommType: "NONE"
       },
-      accountInfo: {iban: data[fieldTransformer.iban], sepa: false, owner: data[fieldTransformer.owner]} as AccountInfo,
+      accountInfo: {iban: text(cell(data, fieldTransformer.iban)), sepa: false, owner: text(cell(data, fieldTransformer.owner))} as AccountInfo,
       contact: {
-        street: data[fieldTransformer.street],
-        city: data[fieldTransformer.city],
-        zip: "" + data[fieldTransformer.zip],
-        streetNumber: "" + data[fieldTransformer.street_nr],
-        phone: "" + data[fieldTransformer.phone],
+        street: text(cell(data, fieldTransformer.street)),
+        city: text(cell(data, fieldTransformer.city)),
+        zip: text(cell(data, fieldTransformer.zip)),
+        streetNumber: text(cell(data, fieldTransformer.street_nr)),
+        phone: text(cell(data, fieldTransformer.phone)),
       },
+      accounts: excelAccounts(data),
     }
     setEeg(formValues);
   }

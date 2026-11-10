@@ -1,5 +1,4 @@
 import React from 'react';
-import './App.css';
 import MainLayout from "./components/layout/MainLayout";
 import { routes } from "./routes";
 import {BrowserRouter, Route, Routes} from "react-router-dom";
@@ -42,12 +41,10 @@ function App() {
   const auth = useAuth()
   // automatically sign-in
   React.useEffect(() => {
-
-    const authP = hasAuthParams()
-
     if (!hasAuthParams() && !auth.isAuthenticated && !auth.activeNavigator && !auth.isLoading) {
       auth.signinRedirect();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `auth` changes on every auth event; this would re-run the redirect check
   }, [auth.isAuthenticated, auth.activeNavigator, auth.isLoading, auth.signinRedirect]);
 
   // Dieses Portal ist ein Betriebswerkzeug: es verwaltet Stammdaten und Energiedaten

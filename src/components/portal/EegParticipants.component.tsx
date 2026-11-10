@@ -5,8 +5,6 @@ import {
   GridActionsCellItem,
   GridCallbackDetails,
   GridColDef,
-  GridRowParams,
-  MuiEvent,
 
 } from "@mui/x-data-grid";
 import {Box, createTheme, ThemeProvider} from "@mui/material";
@@ -44,7 +42,8 @@ const EegParticipantItem: FC = () => {
       value: extractProperties(participant, {"businessRole": "businessRole", "firstName": "firstname", "lastName": "lastname"})
     } as AdminUpdateData;
 
-    Api.portalService.changeParticipantState("PARTICIPANT", processData)
+    // returned so the dialog waits for it and shows a failure
+    return Api.portalService.changeParticipantState("PARTICIPANT", processData)
       .then(row => updateParticipant(row))
   }
 
@@ -92,10 +91,6 @@ const EegParticipantItem: FC = () => {
       },
     },
   ];
-
-  const onSelectRow = (params: GridRowParams, event: MuiEvent, details: GridCallbackDetails) => {
-    selectParticipant(params.row)
-  }
 
   if (participants === undefined || participants.length === 0) {
     return <></>
